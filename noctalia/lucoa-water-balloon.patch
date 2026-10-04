@@ -1,0 +1,109 @@
+diff --git i/src/render/animation/animation.cpp w/src/render/animation/animation.cpp
+index f94e44b..8be096a 100644
+--- i/src/render/animation/animation.cpp
++++ w/src/render/animation/animation.cpp
+@@ -1,6 +1,7 @@
+ #include "render/animation/animation.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ 
+ float applyEasing(Easing easing, float t) {
+   t = std::clamp(t, 0.0F, 1.0F);
+@@ -40,6 +41,27 @@ float applyEasing(Easing easing, float t) {
+     const float f = t - 1.0F;
+     return 1.0F + c3 * f * f * f + c1 * f * f;
+   }
++
++  case Easing::EaseOutWater: {
++  // Spring bem macia, tipo balão de água:
++  // wobble amplo, overshoot suave e assentamento progressivo.
++  constexpr float damping = 4.0F;
++  constexpr float frequency = 11.0F;
++  constexpr float softness = 0.50F;
++
++  const float e = std::exp(-damping * t);
++  const float w = frequency;
++
++  const float spring =
++      1.0F
++      - e * (
++          std::cos(w * t)
++          + (damping / w) * std::sin(w * t)
++      );
++
++  // Mantém a trajetória base e reduz a força da spring em 50%.
++  return t + (spring - t) * softness;
++}
+   }
+ 
+   return t;
+diff --git i/src/render/animation/animation.h w/src/render/animation/animation.h
+index 5512c5a..01a0b25 100644
+--- i/src/render/animation/animation.h
++++ w/src/render/animation/animation.h
+@@ -12,6 +12,7 @@ enum class Easing : std::uint8_t {
+   EaseOutCubic,
+   EaseInOutCubic,
+   EaseOutBack,
++  EaseOutWater,
+ };
+ 
+ float applyEasing(Easing easing, float t);
+diff --git i/src/shell/panel/panel_manager.cpp w/src/shell/panel/panel_manager.cpp
+index 72c65b8..9e4c7eb 100644
+--- i/src/shell/panel/panel_manager.cpp
++++ w/src/shell/panel/panel_manager.cpp
+@@ -2004,7 +2004,18 @@ void PanelManager::onKeyboardEvent(const KeyboardEvent& event) {
+ }
+ 
+ void PanelManager::applyAttachedReveal(float progress) {
+-  m_attachedRevealProgress = std::clamp(progress, 0.0F, 1.0F);
++  const float revealProgress = std::clamp(progress, 0.0F, 1.0F);
++  m_attachedRevealProgress = revealProgress;
++
++  const bool calendarBounce =
++      m_activePanelId == "control-center"
++      && m_activePanel != nullptr
++      && m_activePanel->isContextActive("calendar");
++
++  // O shell/reveal continua limitado a 0..1.
++  // Só o conteúdo do calendário recebe o pequeno overshoot.
++  const float contentProgress = calendarBounce ? progress : revealProgress;
++
+   if (!m_attachedToBar || m_attachedRevealClipNode == nullptr || m_sceneRoot == nullptr) {
+     if (m_attachedToBar && m_surface != nullptr) {
+       m_surface->clearBlurRegion();
+@@ -2018,11 +2029,11 @@ void PanelManager::applyAttachedReveal(float progress) {
+   const float panelH = m_panelVisualHeight > 0 ? static_cast<float>(m_panelVisualHeight) : h;
+   const float travelX = (m_attachedRevealDirection == AttachedRevealDirection::Left
+                          || m_attachedRevealDirection == AttachedRevealDirection::Right)
+-      ? panelW * (1.0F - m_attachedRevealProgress)
++      ? panelW * (1.0F - contentProgress)
+       : 0.0F;
+   const float travelY = (m_attachedRevealDirection == AttachedRevealDirection::Up
+                          || m_attachedRevealDirection == AttachedRevealDirection::Down)
+-      ? panelH * (1.0F - m_attachedRevealProgress)
++      ? panelH * (1.0F - contentProgress)
+       : 0.0F;
+ 
+   float contentX = 0.0F;
+@@ -2126,8 +2137,17 @@ void PanelManager::startAttachedOpenAnimation() {
+   }
+ 
+   m_attachedOpenAnimationPending = false;
++
++  const bool calendarBounce =
++      m_activePanelId == "control-center"
++      && m_activePanel != nullptr
++      && m_activePanel->isContextActive("calendar");
++
++  const Easing openEasing =
++      calendarBounce ? Easing::EaseOutWater : Easing::EaseOutCubic;
++
+   m_animations.animate(
+-      m_attachedRevealProgress, 1.0F, Style::animNormal, Easing::EaseOutCubic,
++      m_attachedRevealProgress, 1.0F, Style::animNormal, openEasing,
+       [this](float v) { applyAttachedReveal(v); }, {}, m_attachedRevealClipNode
+   );
+ }

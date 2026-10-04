@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# ============================================================
+# Lucoa Omarchy — bootstrap
+# Um único comando para baixar e aplicar o rice completo.
+#
+# Uso:
+#   curl -fsSL https://github.com/quetzalcoatl5000AC/lucoa-omarchy/releases/latest/download/bootstrap | bash
+#
+# Ou:
+#   bash bootstrap quetzalcoatl5000AC/lucoa-omarchy
+#   LUCOA_REPO="quetzalcoatl5000AC/lucoa-omarchy" bash bootstrap
+#
+# O bootstrap:
+#   1. valida o ambiente básico;
+#   2. baixa a release mais recente;
+#   3. exige e confere o SHA-256 do pacote;
+#   4. valida o tarball contra path traversal e arquivos especiais;
+#   5. extrai em /tmp;
+#   6. executa o preflight;
+#   7. cria backup;
+#   8. aplica imediatamente toda a configuração.
+#
+# Nunca rode como root. O install/ usa sudo somente nas etapas
+# que realmente precisam de privilégio.
+# ============================================================
+
+REPO="${1:-${LUCOA_REPO:-quetzalcoatl5000AC/lucoa-omarchy}}"
+ASSET_NAME="${LUCOA_RELEASE_ASSET:-lucoa-omarchy.tar.gz}"
+CHECKSUM_NAME="${ASSET_NAME}.sha256"
+
+GITHUB_BASE="https://github.com/$REPO"
+RELEASE_URL="$GITHUB_BASE/releases/latest/download/$ASSET_NAME"
+CHECKSUM_URL="$GITHUB_BASE/releases/latest/download/$CHECKSUM_NAME"
+
+TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/lucoa-omarchy-bootstrap.XXXXXX")"
+ARCHIVE_PATH="$TEMP_ROOT/$ASSET_NAME"
+CHECKSUM_PATH="$TEMP_ROOT/$CHECKSUM_NAME"
+EXTRACT_DIR="$TEMP_ROOT/release"
+
+# ------------------------------------------------------------
+# Cores — paleta Lucoa
+# ------------------------------------------------------------
+RESET=$'\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+PINK=$'\033[38;5;205m'
+HOT_PINK=$'\033[38;5;198m'
+MAGENTA=$'\033[38;5;163m'
+PURPLE=$'\033[38;5;135m'
+LILAC=$'\033[38;5;183m'
+WHITE=$'\033[38;5;255m'
+SOFT=$'\033[38;5;251m'
+GREEN=$'\033[38;5;120m'
+YELLOW=$'\033[38;5;222m'
+RED=$'\033[38;5;203m'
+CYAN=$'\033[38;5;159m'
+
+cleanup() {
+    local status=$?
+    rm -rf -- "$TEMP_ROOT"
+    printf '%s' "$RESET"
+    return "$status"
+}
+trap cleanup EXIT
+
+on_error() {
+    local exit_code=$?
+    printf '\n'
+    printf '%b\n' "${RED}${BOLD}✗ O bootstrap parou por causa de um erro.${RESET}"
+    printf '%b\n' "${SOFT}   Código de saída: ${exit_code}${RESET}"
+    printf '%b\n' "${SOFT}   Nada além das etapas já concluídas foi executado.${RESET}"
+    exit "$exit_code"
+}
+trap on_error ERR
+
+die() {
+    printf '\n%b\n' "${RED}${BOLD}✗ ERRO:${RESET} ${WHITE}$1${RESET}" >&2
+    exit 1
+}
+
+info() {
+    printf '%b\n' "${CYAN}•${RESET} ${WHITE}$1${RESET}"
+}
+
+ok() {
+    printf '%b\n' "${GREEN}✓${RESET} ${WHITE}$1${RESET}"
+}
+
+warn() {
+    printf '%b\n' "${YELLOW}⚠${RESET} ${WHITE}$1${RESET}"
+}
+
+step() {
+    printf '\n%b\n' "${HOT_PINK}${BOLD}╭─ $1${RESET}"
+}
+
+substep() {
+    printf '%b\n' "${PURPLE}│${RESET} ${SOFT}$1${RESET}"
+}
+
+divider() {
+    printf '%b\n' "${MAGENTA}╰──────────────────────────────────────────────────────────${RESET}"
+}
+
+show_header() {
+    clear 2>/dev/null || true
+
+    printf '%b\n' "${MAGENTA}${BOLD}"
+    cat <<'LUCOA'
+      ╭──────────────────────────────────────────────────────╮
+      │                                                      │
+      │                 L U C O A   R I C E                 │
+      │                                                      │
+      │              Omarchy bootstrap installer             │
+      │                                                      │
+      ╰──────────────────────────────────────────────────────╯
+LUCOA
+    printf '%b\n' "${RESET}"
+    printf '%b\n' "${LILAC}      “um comando. baixa. configura. pronto.”${RESET}"
+    printf '\n'
+}
+
+usage() {
+    cat <<'USAGE'
+Lucoa Omarchy — bootstrap
+
+Uso:
+  bash bootstrap [OWNER/REPO]
+
+Exemplos:
+  bash bootstrap quetzalcoatl5000AC/lucoa-omarchy
+  LUCOA_REPO=quetzalcoatl5000AC/lucoa-omarchy bash bootstrap
+
+Variáveis opcionais:
+  LUCOA_REPO            repositório no formato OWNER/REPO
+  LUCOA_RELEASE_ASSET   nome do .tar.gz da release
+
+O bootstrap baixa a release mais recente, verifica seu SHA-256,
+extrai tudo em /tmp, faz preflight + backup e aplica imediatamente
+a configuração.
+USAGE
+}
+
+# ------------------------------------------------------------
+# Entrada
+# ------------------------------------------------------------
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ $EUID -eq 0 ]]; then
+    die "execute como usuário normal; o instalador usa sudo quando necessário."
+fi
+
+if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    die "repositório inválido: $REPO (esperado OWNER/REPO)"
+fi
+
+# O nome do asset é usado como caminho local no diretório temporário.
+# Impedir barras evita que uma variável de ambiente escape de TEMP_ROOT.
+if [[ ! "$ASSET_NAME" =~ ^[A-Za-z0-9._-]+\.tar\.gz$ ]]; then
+    die "nome de release inválido: $ASSET_NAME"
+fi
+
+# ------------------------------------------------------------
+# Dependências mínimas do bootstrap
+# ------------------------------------------------------------
+for cmd in curl tar sha256sum mktemp find head du awk; do
+    command -v "$cmd" >/dev/null 2>&1 \
+        || die "comando obrigatório não encontrado: $cmd"
+done
+
+show_header
+
+printf '%b\n' "${DIM}Repositório : ${WHITE}$REPO${RESET}"
+printf '%b\n' "${DIM}Release     : ${WHITE}latest${RESET}"
+printf '%b\n' "${DIM}Pacote      : ${WHITE}$ASSET_NAME${RESET}"
+
+# ------------------------------------------------------------
+# Baixar
+# ------------------------------------------------------------
+step "Baixando a release mais recente"
+substep "Origem: $RELEASE_URL"
+
+curl \
+    --fail \
+    --location \
+    --proto '=https' \
+    --tlsv1.2 \
+    --show-error \
+    --progress-bar \
+    --retry 4 \
+    --retry-delay 2 \
+    --retry-connrefused \
+    --connect-timeout 15 \
+    --max-time 0 \
+    --output "$ARCHIVE_PATH" \
+    "$RELEASE_URL"
+
+[[ -s "$ARCHIVE_PATH" ]] \
+    || die "a release foi baixada vazia."
+
+ok "pacote baixado: $(du -h "$ARCHIVE_PATH" | awk '{print $1}')"
+
+# ------------------------------------------------------------
+# Integridade
+# ------------------------------------------------------------
+step "Conferindo a integridade"
+substep "Checksum obrigatório: $CHECKSUM_NAME"
+
+if ! curl \
+    --fail \
+    --location \
+    --proto '=https' \
+    --tlsv1.2 \
+    --silent \
+    --show-error \
+    --retry 3 \
+    --connect-timeout 10 \
+    --max-time 30 \
+    --output "$CHECKSUM_PATH" \
+    "$CHECKSUM_URL"; then
+    die "checksum não encontrado na release. Publique $CHECKSUM_NAME junto com o pacote."
+fi
+
+[[ -s "$CHECKSUM_PATH" ]] \
+    || die "o arquivo de checksum foi baixado vazio."
+
+# Aceita o formato padrão de sha256sum:
+#   HASH  lucoa-omarchy.tar.gz
+# e também o modo binário:
+#   HASH *lucoa-omarchy.tar.gz
+#
+# O nome do arquivo é conferido explicitamente para impedir que um
+# checksum malformado valide outro arquivo em vez do tarball baixado.
+if ! checksum_data="$(
+    awk '
+        NF {
+            gsub(/\r$/, "", $0)
+            count++
+            if (count == 1) {
+                print $1 "\t" $2
+            }
+            if (count > 1) {
+                exit 2
+            }
+        }
+        END {
+            if (count != 1) {
+                exit 3
+            }
+        }
+    ' "$CHECKSUM_PATH"
+)"; then
+    die "checksum inválido: esperado exatamente uma linha SHA-256."
+fi
+
+read -r expected_hash expected_file <<< "$checksum_data"
+expected_file="${expected_file#\*}"
+
+[[ "$expected_hash" =~ ^[0-9a-fA-F]{64}$ ]] \
+    || die "checksum inválido: hash SHA-256 não reconhecido."
+
+[[ "$expected_file" == "$ASSET_NAME" ]] \
+    || die "checksum inválido: ele não referencia $ASSET_NAME."
+
+actual_hash="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
+
+if [[ "${actual_hash,,}" != "${expected_hash,,}" ]]; then
+    die "SHA-256 não confere. O pacote baixado não será instalado."
+fi
+
+ok "SHA-256 confirmado."
+
+# ------------------------------------------------------------
+# Validar tarball
+# ------------------------------------------------------------
+step "Validando o pacote"
+
+if ! tar -tzf "$ARCHIVE_PATH" >/dev/null 2>&1; then
+    die "o arquivo baixado não é um tar.gz válido."
+fi
+
+if unsafe_path="$(
+    tar -tzf "$ARCHIVE_PATH" |
+        awk '
+            /^(\.\/)?\// || /(^|\/)\.\.(\/|$)/ {
+                print
+                exit 0
+            }
+        '
+)"; then
+    if [[ -n "$unsafe_path" ]]; then
+        die "a release contém caminho potencialmente perigoso: $unsafe_path"
+    fi
+fi
+
+# Não aceitamos symlinks, hardlinks, dispositivos ou FIFOs no
+# pacote da release. O pacote deve conter apenas arquivos/diretórios
+# normais do instalador.
+if ! unsafe_type="$(
+    tar -tvzf "$ARCHIVE_PATH" |
+        awk '
+            $1 !~ /^[-d]/ {
+                print
+                exit 0
+            }
+        '
+)"; then
+    :
+fi
+
+if [[ -n "${unsafe_type:-}" ]]; then
+    die "a release contém um tipo de arquivo não permitido: $unsafe_type"
+fi
+
+ok "tar.gz válido e sem caminhos/tipos de arquivo perigosos."
+
+# ------------------------------------------------------------
+# Extrair
+# ------------------------------------------------------------
+step "Preparando a instalação"
+
+mkdir -p "$EXTRACT_DIR"
+
+tar \
+    --extract \
+    --gzip \
+    --file "$ARCHIVE_PATH" \
+    --directory "$EXTRACT_DIR" \
+    --no-same-owner \
+    --no-same-permissions
+
+ok "release extraída em diretório temporário."
+
+# Suporta tanto:
+#   release/install/...
+# quanto:
+#   release/lucoa-omarchy/install/...
+INSTALLER_ROOT="$EXTRACT_DIR"
+
+if [[ ! -d "$INSTALLER_ROOT/install" ]]; then
+    local_top="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
+
+    if [[ -n "$local_top" && -d "$local_top/install" ]]; then
+        INSTALLER_ROOT="$local_top"
+    fi
+fi
+
+[[ -d "$INSTALLER_ROOT/install" ]] \
+    || die "diretório install/ não encontrado na release."
+
+for required in \
+    "$INSTALLER_ROOT/install/checks.sh" \
+    "$INSTALLER_ROOT/install/backup.sh" \
+    "$INSTALLER_ROOT/install/install.sh"
+do
+    [[ -f "$required" ]] \
+        || die "arquivo obrigatório ausente: $required"
+done
+
+# O tarball foi extraído com --no-same-permissions. Reaplicamos
+# apenas o bit executável aos scripts conhecidos do instalador.
+chmod +x \
+    "$INSTALLER_ROOT/install/checks.sh" \
+    "$INSTALLER_ROOT/install/backup.sh" \
+    "$INSTALLER_ROOT/install/install.sh"
+
+ok "estrutura do instalador encontrada."
+
+# ------------------------------------------------------------
+# Pré-flight
+# ------------------------------------------------------------
+step "Checando seu Omarchy"
+
+"$INSTALLER_ROOT/install/checks.sh"
+ok "preflight concluído."
+
+# ------------------------------------------------------------
+# Backup
+# ------------------------------------------------------------
+step "Salvando seu setup atual"
+
+"$INSTALLER_ROOT/install/backup.sh"
+ok "backup criado antes das alterações."
+
+# ------------------------------------------------------------
+# Instalação REAL
+# ------------------------------------------------------------
+step "Aplicando o Lucoa Rice"
+
+substep "As configurações serão colocadas agora nos destinos finais."
+substep "Noctalia custom, Hyprland, Rofi, Kitty e Plymouth serão aplicados."
+printf '\n'
+
+# O bootstrap permanece simples: o maestro da release controla a
+# ordem da instalação e qualquer rollback específico.
+"$INSTALLER_ROOT/install/install.sh"
+
+printf '\n'
+divider
+
+printf '\n%b\n' "${PINK}${BOLD}╭──────────────────────────────────────────────────────────╮${RESET}"
+printf '%b\n' "${PINK}${BOLD}│${RESET} ${WHITE}${BOLD}✓ Lucoa Omarchy instalado com sucesso.${RESET}"
+printf '%b\n' "${PINK}${BOLD}│${RESET} ${SOFT}A configuração já foi aplicada nos diretórios finais.${RESET}"
+printf '%b\n' "${PINK}${BOLD}│${RESET} ${SOFT}O pacote temporário será removido automaticamente.${RESET}"
+printf '%b\n' "${PINK}${BOLD}╰──────────────────────────────────────────────────────────╯${RESET}"
+printf '\n'
+
+info "Repositório: $REPO"
+info "Bootstrap concluído; arquivos temporários removidos."
+printf '\n%b\n' "${DIM}feito com carinho e uma quantidade questionável de rosa.${RESET}"

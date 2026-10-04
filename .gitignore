@@ -1,0 +1,14 @@
+.git/
+*.bak
+*.swp
+*~
+.DS_Store
+
+build/
+builddir/
+build-*/
+.cache/
+.cache-*/
+dist/
+release/
+tmp/

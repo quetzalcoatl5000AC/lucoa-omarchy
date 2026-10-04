@@ -1,0 +1,152 @@
+configuration {
+    modi: "drun,run,window";
+    show-icons: true;
+    drun-display-format: "{name}";
+    display-drun: "󰀻";
+    display-run: "󰆍";
+    display-window: "󰖯";
+    sidebar-mode: false;
+    disable-history: false;
+}
+
+* {
+    bg: #10070d;
+    surface: #190b14;
+
+    app-bg: #260014;
+    app-selected: #720044;
+
+    fg: #2b0117;
+    fg-muted: #d08aaa;
+
+    pink: #ff3fa8;
+    pink-light: #ff9dcc;
+}
+
+
+/* WINDOW */
+
+window {
+    width: 680px;
+    height: 520px;
+
+    location: center;
+    anchor: center;
+
+    background-color: @bg;
+
+    border: 1px;
+    border-color: #ff3fa833;
+    border-radius: 22px;
+
+    padding: 24px;
+}
+
+
+/* MAIN */
+
+mainbox {
+    spacing: 16px;
+    children: [ inputbar, message, listview ];
+}
+
+
+/* SEARCH */
+
+inputbar {
+    padding: 13px 17px;
+    spacing: 12px;
+
+    background-color: @surface;
+
+    border: 1px;
+    border-color: #ff3fa822;
+    border-radius: 14px;
+
+    children: [ prompt, entry ];
+}
+
+prompt {
+    text-color: @pink;
+}
+
+entry {
+    text-color: @fg;
+    placeholder: "Procurar aplicações...";
+    placeholder-color: @fg-muted;
+    cursor-color: @pink;
+}
+
+
+/* LIST */
+
+listview {
+    lines: 8;
+    columns: 1;
+    spacing: 6px;
+
+    scrollbar: false;
+    fixed-height: true;
+}
+
+
+/* ═══════════════════════════════════════════
+   APLICATIVOS
+   ═══════════════════════════════════════════ */
+
+element {
+    padding: 11px 14px;
+    spacing: 12px;
+
+    border: 0px;
+    border-radius: 11px;
+
+    children: [ element-icon, element-text ];
+}
+
+
+/* APP NORMAL */
+
+element normal.normal {
+    background-color: #260014;
+    text-color: #fff0f8;
+}
+
+
+/* APP SELECIONADO */
+
+element selected.normal {
+    background-color: #720044;
+    text-color: #ffffff;
+
+    border: 1px;
+    border-color: #ff3fa8;
+}
+
+
+/* APP ALTERNADO */
+
+element alternate.normal {
+    background-color: #260014;
+    text-color: #fff0f8;
+}
+
+
+/* ÍCONE */
+
+element-icon {
+    background-color: inherit;
+    foreground-color: inherit;
+
+    size: 30px;
+}
+
+
+/* TEXTO */
+
+element-text {
+    background-color: inherit;
+    text-color: inherit;
+
+    vertical-align: 0.5;
+}
